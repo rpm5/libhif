@@ -39,7 +39,13 @@
 #include <glib/gstdio.h>
 #include "hy-util.h"
 #include <librepo/librepo.h>
+
+#ifdef	RPM5
+#include <rpmio.h>
+#include <rpmts.h>
+#else	/* RPM5 */
 #include <rpm/rpmts.h>
+#endif	/* RPM5 */
 
 #include "dnf-keyring.h"
 #include "dnf-package.h"
@@ -846,7 +852,9 @@ dnf_repo_setup(DnfRepo *repo, GError **error)
     g_autofree gchar *basearch = NULL;
     g_autofree gchar *release = NULL;
     g_autofree gchar *testdatadir = NULL;
+#ifdef	UNUSED
     g_autofree gchar *user_agent = NULL;
+#endif
     g_autofree gchar *sslcacert = NULL;
     g_autofree gchar *sslclientcert = NULL;
     g_autofree gchar *sslclientkey = NULL;
@@ -1236,7 +1244,9 @@ dnf_repo_add_public_key(DnfRepo *repo, GError **error)
     ts = rpmtsCreate();
     keyring = rpmtsGetKeyring(ts, 1);
     ret = dnf_keyring_add_public_key(keyring, priv->pubkey_tmp, error);
+#ifndef	RPM5
     rpmKeyringFree(keyring);
+#endif	/* RPM5 */
     rpmtsFree(ts);
     return ret;
 }

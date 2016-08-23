@@ -598,11 +598,11 @@ static GChecksumType
 dnf_repo_checksum_hy_to_lr(GChecksumType checksum)
 {
     if (checksum == G_CHECKSUM_MD5)
-        return LR_CHECKSUM_MD5;
+        return (GChecksumType) LR_CHECKSUM_MD5;
     if (checksum == G_CHECKSUM_SHA1)
-        return LR_CHECKSUM_SHA1;
+        return (GChecksumType) LR_CHECKSUM_SHA1;
     if (checksum == G_CHECKSUM_SHA256)
-        return LR_CHECKSUM_SHA256;
+        return (GChecksumType) LR_CHECKSUM_SHA256;
     return G_CHECKSUM_SHA512;
 }
 
@@ -640,7 +640,7 @@ dnf_package_check_filename(DnfPackage *pkg, gboolean *valid, GError **error)
     /* check the checksum */
     checksum = dnf_package_get_chksum(pkg, &checksum_type_hy);
     checksum_valid = hy_chksum_str(checksum, checksum_type_hy);
-    checksum_type_lr = dnf_repo_checksum_hy_to_lr(checksum_type_hy);
+    checksum_type_lr = (LrChecksumType) dnf_repo_checksum_hy_to_lr(checksum_type_hy);
     fd = g_open(path, O_RDONLY, 0);
     if (fd < 0) {
         ret = FALSE;

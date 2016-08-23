@@ -32,9 +32,18 @@
 
 
 #include <glib.h>
+
+#ifdef	RPM5
+#include <rpmio.h>
+#include <rpmlog.h>
+#include <rpmdb.h>
+#include <pkgio.h>
+#include <rpmps.h>
+#else	/* RPM5 */
 #include <rpm/rpmlib.h>
 #include <rpm/rpmlog.h>
 #include <rpm/rpmdb.h>
+#endif
 
 #include "dnf-rpmts.h"
 #include "dnf-types.h"
@@ -165,12 +174,15 @@ out:
 static gchar *
 dnf_rpmts_get_problem_str(rpmProblem prob)
 {
+    gchar *str = NULL;
+#ifdef	RPM5
+    str = (gchar *) rpmProblemString(prob);
+#else	/* RPM5 */
     const char *generic_str;
     const char *pkg_nevr;
     const char *pkg_nevr_alt;
     goffset diskspace;
     rpmProblemType type;
-    gchar *str = NULL;
 
     /* get data from the problem object */
     type = rpmProblemGetType(prob);
@@ -231,12 +243,24 @@ dnf_rpmts_get_problem_str(rpmProblem prob)
                               diskspace,
                               generic_str);
         break;
+#ifdef	RPM5
+    case RPMPROB_RDONLY:
+        break;
+    case RPMPROB_BADPRETRANS:
+        break;
+    case RPMPROB_BADPLATFORM:
+        break;
+    case RPMPROB_NOREPACKAGE:
+        break;
+#else	/* RPM5 */
     case RPMPROB_OBSOLETES:
         str = g_strdup_printf("package %s is obsoleted by %s",
                               pkg_nevr,
                               pkg_nevr_alt);
         break;
+#endif	/* RPM5 */
     }
+#endif	/* RPM5 */
     return str;
 }
 
@@ -259,6 +283,7 @@ dnf_rpmts_look_for_problems(rpmts ts, GError **error)
     rpmpsi psi;
     rpmps probs = NULL;
     g_autoptr(GString) string = NULL;
+    int ix;
 
     /* get a list of problems */
     probs = rpmtsProblems(ts);
@@ -268,9 +293,13 @@ dnf_rpmts_look_for_problems(rpmts ts, GError **error)
     /* parse problems */
     string = g_string_new("");
     psi = rpmpsInitIterator(probs);
-    while (rpmpsNextIterator(psi) >= 0) {
+    while ((ix = rpmpsNextIterator(psi)) >= 0) {
         g_autofree gchar *msg = NULL;
+#ifdef	RPM5
+        prob = rpmpsGetProblem(probs, ix);
+#else	/* RPM5 */
         prob = rpmpsGetProblem(psi);
+#endif	/* RPM5 */
         msg = dnf_rpmts_get_problem_str(prob);
         g_string_append(string, msg);
         g_string_append(string, "\n");
@@ -339,14 +368,47 @@ static Header
 dnf_rpmts_find_package(rpmts ts, DnfPackage *pkg, GError **error)
 {
     Header hdr = NULL;
-    rpmdbMatchIterator iter;
     unsigned int recOffset;
     g_autoptr(GString) rpm_error = NULL;
 
     /* find package by db-id */
     recOffset = dnf_package_get_rpmdbid(pkg);
     rpmlogSetCallback(dnf_rpmts_log_handler_cb, &rpm_error);
-    iter = rpmtsInitIterator(ts, RPMDBI_PACKAGES,
+
+#ifdef	RPM5
+    rpmmi mi = rpmtsInitIterator(ts, RPMDBI_PACKAGES,
+                 &recOffset, sizeof(recOffset));
+    if (mi == NULL) {
+        if (rpm_error != NULL) {
+            g_set_error_literal(error,
+                                DNF_ERROR,
+                                DNF_ERROR_UNFINISHED_TRANSACTION,
+                                rpm_error->str);
+        } else {
+            g_set_error_literal(error,
+                                DNF_ERROR,
+                                DNF_ERROR_UNFINISHED_TRANSACTION,
+                                "Fatal error, run database recovery");
+        }
+        goto out;
+    }
+    hdr = rpmmiNext(mi);
+    if (hdr == NULL) {
+        g_set_error(error,
+                    DNF_ERROR,
+                    DNF_ERROR_FILE_NOT_FOUND,
+                    "failed to find package %s",
+                    dnf_package_get_name(pkg));
+        goto out;
+    }
+
+    /* success */
+    headerLink(hdr);
+out:
+    if (mi)
+        rpmmiFree(mi);
+#else	/* RPM5 */
+    rpmdbMatchIterator iter = rpmtsInitIterator(ts, RPMDBI_PACKAGES,
                  &recOffset, sizeof(recOffset));
     if (iter == NULL) {
         if (rpm_error != NULL) {
@@ -375,9 +437,11 @@ dnf_rpmts_find_package(rpmts ts, DnfPackage *pkg, GError **error)
     /* success */
     headerLink(hdr);
 out:
-    rpmlogSetCallback(NULL, NULL);
     if (iter != NULL)
         rpmdbFreeIterator(iter);
+#endif	/* RPM5 */
+
+    rpmlogSetCallback(NULL, NULL);
     return hdr;
 }
 

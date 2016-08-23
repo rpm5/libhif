@@ -35,7 +35,7 @@ configure_file ("libdnf.pc.in" ${CMAKE_CURRENT_BINARY_DIR}/libdnf.pc @ONLY)
 
 ADD_LIBRARY(libdnf SHARED ${LIBDNF_SRCS})
 TARGET_LINK_LIBRARIES(libdnf
-                      ${REPO_LIBRARIES}
+                      ${REPO_LDFLAGS}
                       ${GLIB_LIBRARIES}
                       ${GLIB_GOBJECT_LIBRARIES}
                       ${GLIB_GIO_LIBRARIES}
@@ -56,7 +56,7 @@ TARGET_LINK_LIBRARIES(hth libdnf
                       ${GLIB_GIO_UNIX_LIBRARIES}
                       ${LIBSOLV_LIBRARY}
                       ${LIBSOLV_EXT_LIBRARY}
-                      ${REPO_LIBRARIES}
+                      ${REPO_LDFLAGS}
                       ${RPMDB_LIBRARY})
 
 SET(LIBHAWKEY_headers

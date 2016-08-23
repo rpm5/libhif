@@ -24,7 +24,12 @@
 
 #include <glib.h>
 
+#ifdef	RPM5
+typedef struct rpmPubkey_s * rpmPubkey;
+typedef struct rpmKeyring_s * rpmKeyring;
+#else	/* RPM5 */
 #include <rpm/rpmkeyring.h>
+#endif	/* RPM5 */
 
 gboolean         dnf_keyring_add_public_key     (rpmKeyring              keyring,
                                                  const gchar            *filename,

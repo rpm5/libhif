@@ -29,9 +29,29 @@
  */
 
 
+#ifdef	RPM5
+#include <rpmio.h>
+#include <rpmlog.h>
+#include <rpmcb.h>
+#include <rpmtag.h>
+#include <rpmts.h>
+#define _RPMVSF_NODIGESTS       \
+  ( RPMVSF_NOSHA1HEADER |       \
+    RPMVSF_NOMD5HEADER |        \
+    RPMVSF_NOSHA1 |             \
+    RPMVSF_NOMD5 )
+
+#define _RPMVSF_NOSIGNATURES    \
+  ( RPMVSF_NODSAHEADER |        \
+    RPMVSF_NORSAHEADER |        \
+    RPMVSF_NODSA |              \
+    RPMVSF_NORSA )
+typedef uint64_t        rpm_loff_t;
+#else	/* RPM5 */
 #include <rpm/rpmlib.h>
 #include <rpm/rpmts.h>
 #include <rpm/rpmlog.h>
+#endif	/* RPM5 */
 
 #include "dnf-db.h"
 #include "dnf-goal.h"
@@ -78,6 +98,36 @@ typedef struct
 G_DEFINE_TYPE_WITH_PRIVATE(DnfTransaction, dnf_transaction, G_TYPE_OBJECT)
 #define GET_PRIVATE(o) (dnf_transaction_get_instance_private (o))
 
+#ifdef	RPM5
+static
+const char * headerGetString(Header h, rpmTag tag)
+{
+    const char * res = NULL;
+    HE_t he = (HE_t) memset(alloca(sizeof(*he)), 0, sizeof(*he));
+    he->tag = tag;
+    if (headerGet(h, he, 0) && he->t == RPM_STRING_TYPE) {
+	res = he->p.str;
+	he->p.ptr = NULL;
+    }
+    if (he->p.ptr)
+	free(he->p.ptr);
+    return (res ? res : strdup(""));
+}
+
+static
+uint64_t headerGetNumber(Header h, rpmTag tag)
+{
+    uint64_t res = 0;
+    HE_t he = (HE_t) memset(alloca(sizeof(*he)), 0, sizeof(*he));
+    he->tag = tag;
+    if (headerGet(h, he, 0) && he->t == RPM_UINT32_TYPE)
+	res = he->p.ui32p[0];
+    if (he->p.ptr)
+	free(he->p.ptr);
+    return res;
+}
+#endif	/* RPM5 */
+
 /**
  * dnf_transaction_finalize:
  **/
@@ -89,7 +139,9 @@ dnf_transaction_finalize(GObject *object)
 
     g_ptr_array_unref(priv->pkgs_to_download);
     g_timer_destroy(priv->timer);
+#ifndef	RPM5
     rpmKeyringFree(priv->keyring);
+#endif	/* RPM5 */
     rpmtsFree(priv->ts);
 
     if (priv->db != NULL)
@@ -1343,7 +1395,12 @@ dnf_transaction_commit(DnfTransaction *transaction,
 
     /* setup the transaction */
     tmp = dnf_context_get_install_root(priv->context);
+#ifdef	RPM5
+    rpmtsSetRootDir(priv->ts, tmp);
+    rc = 0;
+#else	/* RPM5 */
     rc = rpmtsSetRootDir(priv->ts, tmp);
+#endif	/* RPM5 */
     if (rc < 0) {
         ret = FALSE;
         g_set_error_literal(error,

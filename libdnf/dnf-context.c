@@ -31,8 +31,16 @@
 
 
 #include <gio/gio.h>
+
+#ifdef	RPM5
+#include <rpmtag.h>
+#include <rpmmacro.h>
+#include <rpmrc.h>
+#else	/* RPM5 */
 #include <rpm/rpmlib.h>
 #include <rpm/rpmmacro.h>
+#endif	/* RPM5 */
+
 #include <librepo/librepo.h>
 
 #include "dnf-lock.h"
@@ -124,6 +132,24 @@ static guint signals [SIGNAL_LAST] = { 0 };
 
 G_DEFINE_TYPE_WITH_PRIVATE(DnfContext, dnf_context, G_TYPE_OBJECT)
 #define GET_PRIVATE(o) (dnf_context_get_instance_private (o))
+
+#ifdef	RPM5
+static
+void rpmGetArchInfo(const char ** name, int * num)
+{
+    if (name) *name = "x86_64";
+}
+
+static
+void rpmGetOsInfo(const char ** name, int * num)
+{
+#ifdef	MACOSX
+    if (name) *name = "darwin";
+#else
+    if (name) *name = "linux";
+#endif
+}
+#endif	/* RPM5 */
 
 /**
  * dnf_context_finalize:

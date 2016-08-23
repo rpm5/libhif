@@ -23,7 +23,11 @@
 #include <errno.h>
 #include <glib.h>
 #include <fcntl.h>
+
+#ifdef	__linux__
 #include <linux/limits.h>
+#endif
+
 #include <pwd.h>
 #include <regex.h>
 #include <unistd.h>

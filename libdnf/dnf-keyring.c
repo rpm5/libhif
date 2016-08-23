@@ -32,12 +32,46 @@
 
 #include <stdlib.h>
 #include <glib.h>
+
+#ifdef	RPM5
+#include <rpmio.h>
+#include <rpmpgp.h>
+#include <rpmtag.h>
+#include <pkgio.h>
+#include <rpmts.h>
+#define _RPMVSF_NODIGESTS       \
+  ( RPMVSF_NOSHA1HEADER |       \
+    RPMVSF_NOMD5HEADER |        \
+    RPMVSF_NOSHA1 |             \
+    RPMVSF_NOMD5 )
+
+#define _RPMVSF_NOSIGNATURES    \
+  ( RPMVSF_NODSAHEADER |        \
+    RPMVSF_NORSAHEADER |        \
+    RPMVSF_NODSA |              \
+    RPMVSF_NORSA )
+#else	/* RPM5 */
 #include <rpm/rpmlib.h>
 #include <rpm/rpmts.h>
+#endif	/* RPM5 */
 
 #include "dnf-types.h"
 #include "dnf-keyring.h"
 #include "dnf-utils.h"
+
+#ifdef	RPM5
+static
+pgpArmor pgpParsePkts(const char *armor, uint8_t ** pkt, size_t * pktlen)
+{
+    pgpArmor ec = PGPARMOR_ERR_NO_BEGIN_PGP;    /* XXX assume failure */
+    if (armor && strlen(armor) > 0) {
+	rpmiob iob = rpmiobAppend(rpmiobNew(0), armor, 0);
+	ec = pgpArmorUnwrap(iob, pkt, pktlen);
+	iob = rpmiobFree(iob);
+    }
+    return ec;
+}
+#endif	/* RPM5 */
 
 /**
  * dnf_keyring_add_public_key:
@@ -57,11 +91,8 @@ dnf_keyring_add_public_key(rpmKeyring keyring,
                            GError **error)
 {
     gboolean ret = TRUE;
-    gint rc;
     gsize len;
     pgpArmor armor;
-    pgpDig dig = NULL;
-    rpmPubkey pubkey = NULL;
     uint8_t *pkt = NULL;
     g_autofree gchar *data = NULL;
 
@@ -99,6 +130,13 @@ dnf_keyring_add_public_key(rpmKeyring keyring,
         goto out;
     }
 
+#ifdef	RPM5
+#warning FIXME: dnf_keyring_add_public_key().
+#else	/* RPM5 */
+    pgpDig dig = NULL;
+    rpmPubkey pubkey = NULL;
+    gint rc;
+
     /* test each one */
     pubkey = rpmPubkeyNew(pkt, len);
     if (pubkey == NULL) {
@@ -135,6 +173,7 @@ dnf_keyring_add_public_key(rpmKeyring keyring,
                     filename);
         goto out;
     }
+#endif	/* RPM5 */
 
     /* success */
     g_debug("added missing public key %s to rpmdb", filename);
@@ -142,10 +181,12 @@ dnf_keyring_add_public_key(rpmKeyring keyring,
 out:
     if (pkt != NULL)
         free(pkt); /* yes, free() */
+#ifndef	RPM5
     if (pubkey != NULL)
         rpmPubkeyFree(pubkey);
     if (dig != NULL)
         pgpFreeDig(dig);
+#endif	/* RPM5 */
     return ret;
 }
 
@@ -194,9 +235,7 @@ dnf_keyring_check_untrusted_file(rpmKeyring keyring,
     FD_t fd = NULL;
     gboolean ret = FALSE;
     Header hdr = NULL;
-    pgpDig dig = NULL;
     rpmRC rc;
-    rpmtd td = NULL;
     rpmts ts = NULL;
 
     /* open the file for reading */
@@ -235,6 +274,15 @@ dnf_keyring_check_untrusted_file(rpmKeyring keyring,
                     filename);
         goto out;
     }
+
+#ifdef	RPM5
+
+#warning FIXME: dnf_keyring_check_untrusted_file().
+
+#else	/* RPM5 */
+
+    rpmtd td = NULL;
+    pgpDig dig = NULL;
 
     /* convert and upscale */
     headerConvert(hdr, HEADERCONV_RETROFIT_V3);
@@ -286,17 +334,20 @@ dnf_keyring_check_untrusted_file(rpmKeyring keyring,
                     filename);
         goto out;
     }
+#endif	/* RPM5 */
 
     /* the package is signed by a key we trust */
     g_debug("%s has been verified as trusted", filename);
     ret = TRUE;
 out:
+#ifndef	RPM5
     if (dig != NULL)
         pgpFreeDig(dig);
     if (td != NULL) {
         rpmtdFreeData(td);
         rpmtdFree(td);
     }
+#endif	/* RPM5 */
     if (ts != NULL)
         rpmtsFree(ts);
     if (hdr != NULL)
