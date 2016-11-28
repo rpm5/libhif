@@ -107,6 +107,8 @@ dnf_sack_finalize(GObject *object)
 
     FOR_REPOS(i, repo) {
         HyRepo hrepo = repo->appdata;
+        if (!hrepo)
+            continue;
         hy_repo_free(hrepo);
     }
     g_free(priv->cache_dir);
@@ -683,7 +685,6 @@ load_yum_repo(DnfSack *sack, HyRepo hrepo, GError **error)
     }
     checksum_fp(hrepo->checksum, fp_repomd);
 
-    assert(hrepo->state_main == _HY_NEW);
     if (can_use_repomd_cache(fp_cache, hrepo->checksum)) {
         const char *chksum = pool_checksum_str(pool, hrepo->checksum);
         g_debug("using cached %s (0x%s)", name, chksum);
@@ -1681,18 +1682,18 @@ dnf_sack_add_repo(DnfSack *sack,
     /* check repo */
     state_local = dnf_state_get_child(state);
     ret = dnf_repo_check(repo,
-                permissible_cache_age,
-                state_local,
-                &error_local);
+                         permissible_cache_age,
+                         state_local,
+                         &error_local);
     if (!ret) {
         g_debug("failed to check, attempting update: %s",
-             error_local->message);
+                error_local->message);
         g_clear_error(&error_local);
         dnf_state_reset(state_local);
         ret = dnf_repo_update(repo,
-                                DNF_REPO_UPDATE_FLAG_FORCE,
-                                state_local,
-                                &error_local);
+                              DNF_REPO_UPDATE_FLAG_FORCE,
+                              state_local,
+                              &error_local);
         if (!ret) {
             if (!dnf_repo_get_required(repo) &&
                 g_error_matches(error_local,

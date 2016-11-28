@@ -1,4 +1,4 @@
-/*
+/* -*- Mode: C; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  * Copyright (C) 2012-2014 Red Hat, Inc.
  *
  * Licensed under the GNU Lesser General Public License Version 2.1
@@ -22,12 +22,12 @@
 #include <solv/solver.h>
 #include <solv/util.h>
 
+#include "dnf-sack-private.h"
 #include "dnf-types.h"
 #include "hy-goal-private.h"
 #include "hy-iutil.h"
 #include "hy-package-private.h"
 #include "hy-query-private.h"
-#include "dnf-sack-private.h"
 #include "hy-selector-private.h"
 #include "hy-util.h"
 
@@ -58,6 +58,24 @@ replace_filter(DnfSack *sack, struct _Filter **fp, int keyname, int cmp_type,
 
     f->match_type = _HY_STR;
     f->matches[0].str = g_strdup(match);
+    return 0;
+}
+
+static int
+replace_pkg_filter(DnfSack *sack, struct _Filter **fp, int keyname, int cmp_type,
+                   const DnfPackageSet *pset)
+{
+    if (*fp == NULL)
+        *fp = filter_create(1);
+    else
+        filter_reinit(*fp, 1);
+
+    struct _Filter *f = *fp;
+
+    f->keyname = keyname;
+    f->cmp_type = cmp_type;
+    f->match_type = _HY_PKG;
+    f->matches[0].pset = dnf_packageset_clone(pset);
     return 0;
 }
 
@@ -97,7 +115,19 @@ hy_selector_free(HySelector sltr)
     filter_free(sltr->f_name);
     filter_free(sltr->f_provides);
     filter_free(sltr->f_reponame);
+    filter_free(sltr->f_pkg);
     g_free(sltr);
+}
+
+int
+hy_selector_pkg_set(HySelector sltr, int keyname, int cmp_type, const DnfPackageSet *pset)
+{
+    DnfSack *sack = selector_sack(sltr);
+
+    if (sltr->f_name || sltr->f_provides || sltr->f_file) {
+        return DNF_ERROR_BAD_SELECTOR;
+    }
+    return replace_pkg_filter(sack, &sltr->f_pkg, keyname, cmp_type, pset);
 }
 
 int
@@ -114,17 +144,17 @@ hy_selector_set(HySelector sltr, int keyname, int cmp_type, const char *match)
     case HY_PKG_VERSION:
         return replace_filter(sack, &sltr->f_evr, keyname, cmp_type, match);
     case HY_PKG_NAME:
-        if (sltr->f_provides || sltr->f_file)
+        if (sltr->f_provides || sltr->f_file || sltr->f_pkg)
             return DNF_ERROR_BAD_SELECTOR;
         return replace_filter(sack, &sltr->f_name, keyname, cmp_type, match);
     case HY_PKG_PROVIDES:
-        if (sltr->f_name || sltr->f_file)
+        if (sltr->f_name || sltr->f_file || sltr->f_pkg)
             return DNF_ERROR_BAD_SELECTOR;
         return replace_filter(sack, &sltr->f_provides, keyname, cmp_type, match);
     case HY_PKG_REPONAME:
         return replace_filter(sack, &sltr->f_reponame, keyname, cmp_type, match);
     case HY_PKG_FILE:
-        if (sltr->f_name || sltr->f_provides)
+        if (sltr->f_name || sltr->f_provides || sltr->f_pkg)
             return DNF_ERROR_BAD_SELECTOR;
         return replace_filter(sack, &sltr->f_file, keyname, cmp_type, match);
     default:
@@ -152,4 +182,17 @@ hy_selector_matches(HySelector sltr)
     queue_free(&solvables);
     queue_free(&job);
     return plist;
+}
+
+gboolean
+hy_selector_has_matches(HySelector sltr)
+{
+    /* Doing things this way obviously wastes allocations,
+     * but it avoids code duplication.  All of the callers
+     * seem to really want this, so at some point if that's
+     * true, let's nuke hy_selector_matches().
+     */
+    g_autoptr(GPtrArray) selector_matches = NULL;
+    selector_matches = hy_selector_matches(sltr);
+    return selector_matches->len > 0;
 }

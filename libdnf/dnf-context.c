@@ -52,6 +52,8 @@
 #include "dnf-utils.h"
 #include "dnf-sack.h"
 #include "hy-query.h"
+#include "hy-subject.h"
+#include "hy-selector.h"
 
 #define MAX_NATIVE_ARCHES    12
 
@@ -753,6 +755,7 @@ dnf_context_get_installonly_pkgs(DnfContext *context)
 {
     static const gchar *installonly_pkgs[] = {
         "kernel",
+        "kernel-PAE",
         "installonlypkg(kernel)",
         "installonlypkg(kernel-module)",
         "installonlypkg(vm)",
@@ -1685,43 +1688,39 @@ gboolean
 dnf_context_install (DnfContext *context, const gchar *name, GError **error)
 {
     DnfContextPrivate *priv = GET_PRIVATE (context);
-    g_autoptr(GPtrArray) pkglist = NULL;
-    DnfPackage *pkg;
-    hy_autoquery HyQuery query = NULL;
-    gboolean ret = TRUE;
+    g_autoptr(GPtrArray) selector_matches = NULL;
+    HySelector selector = NULL;
+    HySubject subject = NULL;
+    gboolean ret = FALSE;
 
     /* create sack and add sources */
     if (priv->sack == NULL) {
         dnf_state_reset (priv->state);
-        ret = dnf_context_setup_sack(context, priv->state, error);
-        if (!ret)
-            return FALSE;
+        if (!dnf_context_setup_sack(context, priv->state, error))
+            goto out;
     }
 
-    /* find a newest remote package to install */
-    query = hy_query_create(priv->sack);
-    hy_query_filter_latest(query, TRUE);
-    hy_query_filter_in(query, HY_PKG_ARCH, HY_EQ,
-                       (const gchar **) priv->native_arches);
-    hy_query_filter(query, HY_PKG_REPONAME, HY_NEQ, HY_SYSTEM_REPO_NAME);
-    hy_query_filter(query, HY_PKG_ARCH, HY_NEQ, "src");
-    hy_query_filter(query, HY_PKG_NAME, HY_EQ, name);
-    pkglist = hy_query_run(query);
-
-    if (pkglist->len == 0) {
+    subject = hy_subject_create(name);
+    selector = hy_subject_get_best_selector(subject, priv->sack);
+    selector_matches = hy_selector_matches(selector);
+    if (selector_matches->len == 0) {
         g_set_error(error,
                     DNF_ERROR,
                     DNF_ERROR_PACKAGE_NOT_FOUND,
-                    "No package '%s' found", name);
+                    "No package matches '%s'", name);
         return FALSE;
     }
 
-    /* add first package */
-    pkg = g_ptr_array_index (pkglist, 0);
-    g_debug("adding %s-%s to goal", dnf_package_get_name(pkg), dnf_package_get_evr(pkg));
-    hy_goal_install(priv->goal, pkg);
+    if (!hy_goal_install_selector(priv->goal, selector, error))
+        goto out;
 
-    return TRUE;
+    ret = TRUE;
+ out:
+    if (selector)
+        hy_selector_free(selector);
+    if (subject)
+        hy_subject_free(subject);
+    return ret;
 }
 
 /**
@@ -1824,6 +1823,35 @@ dnf_context_update(DnfContext *context, const gchar *name, GError **error)
             hy_goal_upgrade_to(priv->goal, pkg);
     }
     g_ptr_array_unref(pkglist);
+    return TRUE;
+}
+
+/**
+ * dnf_context_update_all:
+ * @context: a #DnfContext instance.
+ * @error: A #GError or %NULL
+ *
+ * Update all packages.
+ *
+ * Returns: %TRUE for success, %FALSE otherwise
+ *
+ * Since: 0.7.0
+ **/
+gboolean
+dnf_context_update_all (DnfContext  *context,
+                        GError     **error)
+{
+    DnfContextPrivate *priv = GET_PRIVATE(context);
+
+    /* create sack and add repos */
+    if (priv->sack == NULL) {
+        dnf_state_reset(priv->state);
+        if (!dnf_context_setup_sack(context, priv->state, error))
+            return FALSE;
+    }
+
+    /* update whole solvables */
+    hy_goal_upgrade_all (priv->goal);
     return TRUE;
 }
 

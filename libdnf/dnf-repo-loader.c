@@ -151,9 +151,6 @@ dnf_repo_loader_add_media(DnfRepoLoader *self,
 {
     DnfRepoLoaderPrivate *priv = GET_PRIVATE(self);
     DnfRepo *repo;
-#ifdef	UNUSED
-    g_autofree gchar *packages = NULL;
-#endif
     g_autofree gchar *treeinfo_fn = NULL;
     g_autoptr(GKeyFile) treeinfo = NULL;
 
@@ -402,10 +399,10 @@ dnf_repo_loader_repo_parse(DnfRepoLoader *self,
     groups = g_key_file_get_groups(keyfile, NULL);
     for (i = 0; groups[i] != NULL; i++) {
         ret = dnf_repo_loader_repo_parse_id(self,
-                         groups[i],
-                         filename,
-                         keyfile,
-                         error);
+                                            groups[i],
+                                            filename,
+                                            keyfile,
+                                            error);
         if (!ret)
             return FALSE;
     }

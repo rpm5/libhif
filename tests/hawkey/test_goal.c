@@ -32,6 +32,7 @@
 #include "libdnf/hy-repo.h"
 #include "libdnf/hy-query.h"
 #include "libdnf/dnf-sack-private.h"
+#include "libdnf/dnf-solution.h"
 #include "libdnf/dnf-goal.h"
 #include "libdnf/hy-selector.h"
 #include "libdnf/hy-util.h"
@@ -224,6 +225,28 @@ START_TEST(test_goal_install_selector)
     GPtrArray *plist = hy_goal_list_installs(goal, NULL);
     const char *nvra = dnf_package_get_nevra(g_ptr_array_index(plist, 0));
     ck_assert_str_eq(nvra, "semolina-2-0.i686");
+    g_ptr_array_unref(plist);
+    hy_goal_free(goal);
+}
+END_TEST
+
+START_TEST(test_goal_install_selector_obsoletes_first)
+{
+    HySelector sltr;
+    HyGoal goal = hy_goal_create(test_globals.sack);
+
+    sltr = hy_selector_create(test_globals.sack);
+    hy_selector_set(sltr, HY_PKG_PROVIDES, HY_EQ, "somereq");
+    fail_if(!hy_goal_install_selector(goal, sltr, NULL));
+    hy_selector_free(sltr);
+
+    fail_if(hy_goal_run(goal));
+    assert_iueo(goal, 1, 0, 0, 0);
+
+    GPtrArray *plist = hy_goal_list_installs(goal, NULL);
+    char *nvra = dnf_package_get_nevra(g_ptr_array_index(plist, 0));
+    ck_assert_str_eq(nvra, "B-1-0.noarch");
+    g_free(nvra);
     g_ptr_array_unref(plist);
     hy_goal_free(goal);
 }
@@ -596,6 +619,34 @@ START_TEST(test_goal_describe_problem)
     const char *expected = "nothing provides goodbye";
     fail_if(strncmp(problem, expected, strlen(expected)));
     g_free(problem);
+
+    g_object_unref(pkg);
+    hy_goal_free(goal);
+}
+END_TEST
+
+START_TEST(test_goal_describe_problem_rules)
+{
+    g_autoptr(GError) error = NULL;
+    DnfSack *sack = test_globals.sack;
+    DnfPackage *pkg = get_latest_pkg(sack, "hello");
+    HyGoal goal = hy_goal_create(sack);
+
+    hy_goal_install(goal, pkg);
+    fail_unless(hy_goal_run(goal));
+    fail_unless(hy_goal_list_installs(goal, &error) == NULL);
+    fail_unless(error->code == DNF_ERROR_NO_SOLUTION);
+    fail_unless(hy_goal_count_problems(goal) > 0);
+
+    const char **problems = hy_goal_describe_problem_rules(goal, 0);
+    const char *expected[] = {
+                "conflicting requests",
+                "nothing provides goodbye needed by hello-1-1.noarch"
+                };
+    for (gint p = 0; p < hy_goal_count_problems(goal); ++p) {
+        fail_if(strncmp(problems[p], expected[p], strlen(expected[p])));
+    }
+    g_free(problems);
 
     g_object_unref(pkg);
     hy_goal_free(goal);
@@ -1300,6 +1351,49 @@ START_TEST(test_cmdline_file_provides)
 }
 END_TEST
 
+START_TEST(test_goal_get_solution)
+{
+
+    DnfSack *sack = test_globals.sack;
+    HyGoal goal = hy_goal_create(sack);
+    HySelector sltr = hy_selector_create(sack);
+
+    hy_selector_set(sltr, HY_PKG_NAME, HY_EQ, "pilchard");
+    hy_goal_install_selector(goal, sltr,NULL);
+    hy_selector_set(sltr, HY_PKG_NAME, HY_EQ, "dog");
+    hy_goal_install_selector(goal, sltr,NULL);
+    hy_selector_set(sltr, HY_PKG_NAME, HY_EQ, "custard");
+    hy_goal_install_selector(goal, sltr,NULL);
+    fail_unless(hy_goal_run_flags(goal, DNF_FORCE_BEST));
+    fail_unless(hy_goal_count_problems(goal) == 2);
+
+    DnfSolutionAction expected_actions[2][3] = {
+                                   {DNF_SOLUTION_ACTION_DO_NOT_INSTALL, 0, 0},
+                                   {DNF_SOLUTION_ACTION_ALLOW_REMOVE,
+                                    DNF_SOLUTION_ACTION_DO_NOT_REMOVE,
+                                    DNF_SOLUTION_ACTION_DO_NOT_INSTALL}};
+    const gchar *expected_old[2][3] = {{NULL, NULL, NULL},
+                        {"pilchard-1.2.3-1.i686", "pilchard-1.2.3-1.i686", NULL}};
+    const gchar *expected_new[2][3] = {{"custard", NULL, NULL},
+                        {NULL, NULL, "pilchard"}};
+
+    g_autoptr(GPtrArray) slist = NULL;
+    for (gint p = 0; p < hy_goal_count_problems(goal); ++p) {
+        slist = hy_goal_get_solution(goal, p);
+        for (guint i = 0; i < slist->len; ++i) {
+            DnfSolution *sol = g_ptr_array_index(slist, i);
+            fail_unless(dnf_solution_get_action(sol) == expected_actions[p][i]);
+            fail_unless(g_strcmp0(dnf_solution_get_old(sol), expected_old[p][i]) == 0);
+            fail_unless(g_strcmp0(dnf_solution_get_new(sol), expected_new[p][i]) == 0);
+        }
+    }
+
+    hy_selector_free(sltr);
+    hy_goal_free(goal);
+}
+END_TEST
+
+
 Suite *
 goal_suite(void)
 {
@@ -1329,6 +1423,7 @@ goal_suite(void)
     tcase_add_test(tc, test_goal_get_reason);
     tcase_add_test(tc, test_goal_get_reason_selector);
     tcase_add_test(tc, test_goal_describe_problem);
+    tcase_add_test(tc, test_goal_describe_problem_rules);
     tcase_add_test(tc, test_goal_distupgrade_all_keep_arch);
     tcase_add_test(tc, test_goal_no_reinstall);
     tcase_add_test(tc, test_goal_erase_simple);
@@ -1336,6 +1431,7 @@ goal_suite(void)
     tcase_add_test(tc, test_goal_protected);
     tcase_add_test(tc, test_goal_erase_clean_deps);
     tcase_add_test(tc, test_goal_forcebest);
+    tcase_add_test(tc, test_goal_get_solution);
     suite_add_tcase(s, tc);
 
     tc = tcase_create("ModifiesSackState");
@@ -1363,6 +1459,7 @@ goal_suite(void)
     tc = tcase_create("Greedy");
     tcase_add_unchecked_fixture(tc, fixture_greedy_only, teardown);
     tcase_add_test(tc, test_goal_run_all);
+    tcase_add_test(tc, test_goal_install_selector_obsoletes_first);
     tcase_add_test(tc, test_goal_install_weak_deps);
     suite_add_tcase(s, tc);
 

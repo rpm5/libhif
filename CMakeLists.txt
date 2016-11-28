@@ -12,16 +12,13 @@ set(CMAKE_LIBRARY_PATH /opt/local/lib ${CMAKE_LIBRARY_PATH})
 include (VERSION.cmake)
 message ("Building libdnf version: ${LIBDNF_VERSION}")
 
-IF (APPLE)
-set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=gnu11 -Wcast-align -Wno-uninitialized -Wmissing-declarations -Wredundant-decls -Wcast-align -Wwrite-strings -Wreturn-type -Wformat-nonliteral -Wmissing-format-attribute -Wsign-compare -Wtype-limits -Wuninitialized -Waggregate-return -Wshadow -Winline -Wall -Werror=implicit-function-declaration")
-ELSE (APPLE)
-set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=gnu99 -Wcast-align -Wno-uninitialized -Wmissing-declarations -Wredundant-decls -Wcast-align -Wwrite-strings -Wreturn-type -Wformat-nonliteral -Wmissing-format-attribute -Wsign-compare -Wtype-limits -Wuninitialized -Waggregate-return -Wshadow -Winline -Wall -Werror=implicit-function-declaration -Wl,--as-needed")
-ENDIF (APPLE)
-
-set (CMAKE_C_FLAGS_DEBUG	"${CMAKE_C_FLAGS} -ggdb -O0")
-IF(NOT CMAKE_BUILD_TYPE)
-  set (CMAKE_BUILD_TYPE DEBUG)
-ENDIF(NOT CMAKE_BUILD_TYPE)
+set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=gnu11 -Wcast-align -Wno-uninitialized -Wmissing-declarations -Wredundant-decls -Wcast-align -Wwrite-strings -Wreturn-type -Wformat-nonliteral -Wmissing-format-attribute -Wsign-compare -Wtype-limits -Wuninitialized -Waggregate-return -Wshadow -Winline -Wall -Werror=implicit-function-declaration -Wl,--as-needed")
+include (CheckSymbolExists)
+list (APPEND CMAKE_REQUIRED_DEFINITIONS -D_GNU_SOURCE)
+check_symbol_exists (FNM_CASEFOLD "fnmatch.h" HAS_FNM_CASEFOLD)
+if (NOT HAS_FNM_CASEFOLD)
+  message (SEND_ERROR "FNM_CASEFOLD is not available")
+endif ()
 
 ADD_DEFINITIONS(-DG_LOG_DOMAIN=\\"libdnf\\")
 

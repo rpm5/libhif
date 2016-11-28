@@ -25,18 +25,21 @@
 
 // libsolv
 #include <solv/evr.h>
+#include <solv/policy.h>
 #include <solv/selection.h>
 #include <solv/solver.h>
 #include <solv/solverdebug.h>
 #include <solv/testcase.h>
 #include <solv/transaction.h>
 #include <solv/util.h>
+#include <solv/poolid.h>
 
 // hawkey
 #include "dnf-types.h"
 #include "hy-goal-private.h"
 #include "hy-iutil.h"
 #include "hy-package-private.h"
+#include "hy-packageset-private.h"
 #include "hy-query-private.h"
 #include "dnf-reldep-private.h"
 #include "hy-repo-private.h"
@@ -45,7 +48,11 @@
 #include "dnf-package.h"
 #include "hy-selector-private.h"
 #include "hy-util.h"
+#include "dnf-package.h"
+#include "hy-package.h"
+#include "dnf-solution-private.h"
 
+#define BLOCK_SIZE 15
 
 struct _SolutionCallback {
     HyGoal goal;
@@ -480,6 +487,28 @@ filter_file2job(DnfSack *sack, const struct _Filter *f, Queue *job)
 }
 
 static int
+filter_pkg2job(DnfSack *sack, const struct _Filter *f, Queue *job)
+{
+    if (f == NULL)
+        return 0;
+    assert(f->nmatches == 1);
+    Pool *pool = dnf_sack_get_pool(sack);
+    const DnfPackageSet *pset = f->matches[0].pset;
+    const int count = dnf_packageset_count(pset);
+    Id what;
+    Id id = -1;
+    Queue pkgs;
+    queue_init(&pkgs);
+    for (int i = 0; i < count; ++i) {
+        id = dnf_packageset_get_pkgid(pset, i, id);
+        queue_push(&pkgs, id);
+    }
+    what = pool_queuetowhatprovides(pool, &pkgs);
+    queue_push2(job, SOLVER_SOLVABLE_ONE_OF|SOLVER_SETARCH|SOLVER_SETEVR, what);
+    return 0;
+}
+
+static int
 filter_name2job(DnfSack *sack, const struct _Filter *f, Queue *job)
 {
     if (f == NULL)
@@ -517,6 +546,36 @@ filter_name2job(DnfSack *sack, const struct _Filter *f, Queue *job)
     return 0;
 }
 
+/**
+ * add_preferred_provide:
+ * when searching by provides the packages that contain the same
+ * name as provide or contain obsoletes with the same name as their
+ * provide will be picked first
+ */
+static void
+add_preferred_provide(DnfSack *sack, Queue *job, Id id)
+{
+    g_autoptr(GPtrArray) plist = g_ptr_array_new_with_free_func(
+        (GDestroyNotify) g_object_unref);
+    Pool *pool = dnf_sack_get_pool(sack);
+    const char *name = pool_dep2str(pool, id);
+    HyQuery q = hy_query_create(sack);
+    hy_query_filter(q, HY_PKG_NAME, HY_NEQ, name);
+    DnfPackageSet *pset = hy_query_run_set(q);
+    hy_query_filter(q, HY_PKG_PROVIDES, HY_EQ, name);
+    hy_query_filter_package_in(q, HY_PKG_OBSOLETES, HY_NEQ, pset);
+    DnfPackage *pkg;
+    plist = hy_query_run(q);
+    for (guint i = 0; i < plist->len; i++) {
+        pkg = g_ptr_array_index(plist, i);
+        queue_push2(job, SOLVER_DISFAVOR|SOLVER_SOLVABLE,
+                    dnf_package_get_id(pkg));
+    }
+    queue_push2(job, SOLVER_SOLVABLE_PROVIDES, id);
+    hy_query_free(q);
+    g_object_unref(pset);
+}
+
 static int
 filter_provides2job(DnfSack *sack, const struct _Filter *f, Queue *job)
 {
@@ -532,7 +591,7 @@ filter_provides2job(DnfSack *sack, const struct _Filter *f, Queue *job)
     switch (f->cmp_type) {
     case HY_EQ:
         id = dnf_reldep_get_id (f->matches[0].reldep);
-        queue_push2(job, SOLVER_SOLVABLE_PROVIDES, id);
+        add_preferred_provide(sack, job, id);
         break;
     case HY_GLOB:
         dataiterator_init(&di, pool, 0, 0, SOLVABLE_PROVIDES, name, SEARCH_GLOB);
@@ -543,7 +602,7 @@ filter_provides2job(DnfSack *sack, const struct _Filter *f, Queue *job)
         assert(di.idp);
         id = *di.idp;
         if (!job_has(job, SOLVABLE_PROVIDES, id))
-            queue_push2(job, SOLVER_SOLVABLE_PROVIDES, id);
+            add_preferred_provide(sack, job, id);
         dataiterator_free(&di);
         break;
     default:
@@ -591,7 +650,7 @@ sltr2job(const HySelector sltr, Queue *job, int solver_action)
     int ret = 0;
     Queue job_sltr;
     int any_opt_filter = sltr->f_arch || sltr->f_evr || sltr->f_reponame;
-    int any_req_filter = sltr->f_name || sltr->f_provides || sltr->f_file;
+    int any_req_filter = sltr->f_name || sltr->f_provides || sltr->f_file || sltr->f_pkg;
 
     queue_init(&job_sltr);
 
@@ -604,6 +663,9 @@ sltr2job(const HySelector sltr, Queue *job, int solver_action)
 
     dnf_sack_recompute_considered(sack);
     dnf_sack_make_provides_ready(sack);
+    ret = filter_pkg2job(sack, sltr->f_pkg, &job_sltr);
+    if (ret)
+        goto finish;
     ret = filter_name2job(sack, sltr->f_name, &job_sltr);
     if (ret)
         goto finish;
@@ -943,6 +1005,50 @@ hy_goal_describe_problem(HyGoal goal, unsigned i)
 }
 
 /**
+ * List describing failed rules in solving problem 'i'.
+ *
+ * Caller is responsible for freeing the returned string list.
+ */
+const char **
+hy_goal_describe_problem_rules(HyGoal goal, unsigned i)
+{
+    const char **problist = NULL;
+    int p = 0;
+    /* internal error */
+    if (i >= (unsigned) hy_goal_count_problems(goal))
+        return NULL;
+    // problem is not in libsolv - removal of protected packages
+    if (i >= (unsigned) solver_problem_count(goal->solv)) {
+        problist = solv_extend(problist, p, 1, sizeof(char*), BLOCK_SIZE);
+        problist[p++] = hy_goal_describe_problem(goal, i);
+        problist = solv_extend(problist, p, 1, sizeof(char*), BLOCK_SIZE);
+        problist[p++] = NULL;
+        return problist;
+    }
+
+    Queue pq;
+    Id rid, source, target, dep;
+    SolverRuleinfo type;
+    const char *problem;
+    int j;
+    queue_init(&pq);
+    // this libsolv interface indexes from 1 (we do from 0), so:
+    solver_findallproblemrules(goal->solv, i+1, &pq);
+    for (j = 0; j < pq.count; j++) {
+        rid = pq.elements[j];
+        type = solver_ruleinfo(goal->solv, rid, &source, &target, &dep);
+        problem = solver_problemruleinfo2str(goal->solv,
+                                             type, source, target, dep);
+        problist = solv_extend(problist, p, 1, sizeof(char*), BLOCK_SIZE);
+        problist[p++] = g_strdup(problem);
+    }
+    problist = solv_extend(problist, p, 1, sizeof(char*), BLOCK_SIZE);
+    problist[p++] = NULL;
+    queue_free(&pq);
+    return problist;
+}
+
+/**
  * Write all the solving decisions to the hawkey logfile.
  */
 int
@@ -1072,7 +1178,9 @@ hy_goal_list_obsoleted_by_package(HyGoal goal, DnfPackage *pkg)
 int
 hy_goal_get_reason(HyGoal goal, DnfPackage *pkg)
 {
-    assert(goal->solv);
+    //solver_get_recommendations
+    if (goal->solv == NULL)
+        return HY_REASON_USER;
     Id info;
     int reason = solver_describe_decision(goal->solv, dnf_package_get_id(pkg), &info);
 
@@ -1085,4 +1193,132 @@ hy_goal_get_reason(HyGoal goal, DnfPackage *pkg)
     if (reason == SOLVER_REASON_WEAKDEP)
         return HY_REASON_WEAKDEP;
     return HY_REASON_DEP;
+}
+
+/**
+ * hy_goal_get_solution:
+ * @goal: A #HyGoal
+ * @problem_id: problem sequence number
+ *
+ * Returns list of #DnfSolution objects associated with the problem.
+ *
+ * Returns: GPtrArray of #DnfSolution objects
+ *
+ * Since: 0.7.0
+ */
+GPtrArray *
+hy_goal_get_solution(HyGoal goal, guint problem_id)
+{
+    assert(goal->solv);
+    assert(goal->sack);
+
+    int scnt = 0;
+    Id solution, element, p, rp;
+    Pool *pool = goal->solv->pool;
+    Solver *solv = goal->solv;
+    Solvable *s = NULL;
+    GPtrArray *slist = g_ptr_array_new_with_free_func((GDestroyNotify)g_object_unref);
+
+    //Internal error
+    if (problem_id >= (unsigned) hy_goal_count_problems(goal))
+    {
+        return slist;
+    }
+    // hawkey problems - removal of protected packages
+    if (problem_id >= (unsigned) solver_problem_count(goal->solv))
+    {
+        // what about returning list packages which pull protected
+        // packages into transaction?
+        return slist;
+    }
+
+    problem_id++; //increment problem ID. libsolv indexes at 1, libhif indexes at 0
+
+    scnt = solver_solution_count(solv, problem_id);
+    p = 0;
+    rp = 0;
+
+    for (solution = 1; solution <= scnt; solution++) {
+        element = 0;
+        while ((element = solver_next_solutionelement(solv, problem_id, solution,
+                                                      element, &p, &rp)) != 0) {
+            DnfSolution *sol = dnf_solution_new();
+            const gchar *old = NULL;
+            const gchar *new = NULL;
+            DnfSolutionAction action;
+            // see libsolv:solver_next_solutionelement() description
+            // for possible results and their meaning
+            if (p == SOLVER_SOLUTION_JOB || p == SOLVER_SOLUTION_POOLJOB) {
+                Id how, what;
+                if (p == SOLVER_SOLUTION_JOB) {
+                    rp += solv->pooljobcnt;
+                }
+                s = pool->solvables + rp;
+
+                how = solv->job.elements[rp - 1];
+                what = solv->job.elements[rp];
+
+                // do not ask to use that dependency
+                // pool_job2str(pool, how, what, 0), 0));
+                action = DNF_SOLUTION_ACTION_DO_NOT_INSTALL;
+                new = solver_select2str(pool, how & SOLVER_SELECTMASK, what);
+            } else if (p == SOLVER_SOLUTION_INFARCH) {
+                s = pool->solvables + rp;
+                if (pool->installed && s->repo == pool->installed) {
+                    // keep package despite the inferior architecture
+                    action = DNF_SOLUTION_ACTION_DO_NOT_REMOVE;
+                    old = pool_solvable2str(pool, s);
+                } else {
+                    // install despite the inferior architecture
+                    action = DNF_SOLUTION_ACTION_ALLOW_INSTALL;
+                    new = pool_solvable2str(pool, s);
+                }
+            } else if (p == SOLVER_SOLUTION_DISTUPGRADE) {
+                s = pool->solvables + rp;
+                if (pool->installed && s->repo == pool->installed) {
+                    // keep obsolete package
+                    action = DNF_SOLUTION_ACTION_DO_NOT_OBSOLETE;
+                    old = pool_solvable2str(pool, s);
+                } else {
+                    // installC package from excluded repository
+                    action = DNF_SOLUTION_ACTION_ALLOW_INSTALL;
+                    new = pool_solvable2str(pool, s);
+                }
+            } else if (p == SOLVER_SOLUTION_BEST) {
+                s = pool->solvables + rp;
+                if (pool->installed && s->repo == pool->installed) {
+                    // keep old package
+                    action = DNF_SOLUTION_ACTION_DO_NOT_UPGRADE;
+                    old = pool_solvable2str(pool, s);
+                } else {
+                    // install despite the old version
+                    action = DNF_SOLUTION_ACTION_ALLOW_INSTALL;
+                    new = pool_solvable2str(pool, s);
+                }
+            } else if (p > 0 && rp == 0) {
+                s = pool->solvables + p;
+                // allow deinstallation of package
+                action = DNF_SOLUTION_ACTION_ALLOW_REMOVE;
+                old = pool_solvid2str(pool, p);
+            } else if (p > 0 && rp > 0) {
+                s = pool->solvables + rp;
+                // allow replacement of old with new
+                action = DNF_SOLUTION_ACTION_ALLOW_REPLACEMENT;
+                old = pool_solvid2str(pool, p);
+                new = pool_solvid2str(pool, rp);
+            } else {
+                s = pool->solvables + rp;
+                // bad solution element
+                action = DNF_SOLUTION_ACTION_BAD_SOLUTION;
+            }
+
+            //g_debug("rp=%d, p=%d",rp,p);
+            //g_debug("name: %s",pool_id2str(pool, s->name));
+
+            dnf_solution_set(sol, action, old, new);
+            g_ptr_array_add(slist, sol);
+        }
+    }
+
+    return slist;
 }

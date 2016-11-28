@@ -136,6 +136,7 @@ ADVISORY_UNKNOWN = _hawkey.ADVISORY_UNKNOWN
 ADVISORY_SECURITY = _hawkey.ADVISORY_SECURITY
 ADVISORY_BUGFIX = _hawkey.ADVISORY_BUGFIX
 ADVISORY_ENHANCEMENT = _hawkey.ADVISORY_ENHANCEMENT
+ADVISORY_NEWPACKAGE = _hawkey.ADVISORY_NEWPACKAGE
 
 REFERENCE_UNKNOWN = _hawkey.REFERENCE_UNKNOWN
 REFERENCE_BUGZILLA = _hawkey.REFERENCE_BUGZILLA
@@ -170,6 +171,19 @@ FORCE_BEST = _hawkey.FORCE_BEST
 VERIFY = _hawkey.VERIFY
 IGNORE_WEAK_DEPS = _hawkey.IGNORE_WEAK_DEPS
 
+SOLUTION_ALLOW_INSTALL = _hawkey.SOLUTION_ALLOW_INSTALL
+SOLUTION_ALLOW_REINSTALL = _hawkey.SOLUTION_ALLOW_REINSTALL
+SOLUTION_ALLOW_UPGRADE = _hawkey.SOLUTION_ALLOW_UPGRADE
+SOLUTION_ALLOW_DOWNGRADE = _hawkey.SOLUTION_ALLOW_DOWNGRADE
+SOLUTION_ALLOW_CHANGE = _hawkey.SOLUTION_ALLOW_CHANGE
+SOLUTION_ALLOW_OBSOLETE = _hawkey.SOLUTION_ALLOW_OBSOLETE
+SOLUTION_ALLOW_REPLACEMENT = _hawkey.SOLUTION_ALLOW_REPLACEMENT
+SOLUTION_ALLOW_REMOVE = _hawkey.SOLUTION_ALLOW_REMOVE
+SOLUTION_DO_NOT_INSTALL = _hawkey.SOLUTION_DO_NOT_INSTALL
+SOLUTION_DO_NOT_REMOVE = _hawkey.SOLUTION_DO_NOT_REMOVE
+SOLUTION_DO_NOT_OBSOLETE = _hawkey.SOLUTION_DO_NOT_OBSOLETE
+SOLUTION_DO_NOT_UPGRADE = _hawkey.SOLUTION_DO_NOT_UPGRADE
+SOLUTION_BAD_SOLUTION = _hawkey.SOLUTION_BAD_SOLUTION
 
 def split_nevra(s):
     t = _hawkey.split_nevra(s)
@@ -181,6 +195,10 @@ class NEVRA(_hawkey.NEVRA):
     def to_query(self, sack):
         _hawkey_query = super(NEVRA, self).to_query(sack)
         return Query(query=_hawkey_query)
+
+    def _has_just_name(self):
+        return self.name and not self.epoch and not self.version and \
+            not self.release and not self.arch
 
 
 class Goal(_hawkey.Goal):
@@ -217,6 +235,10 @@ class Goal(_hawkey.Goal):
     @property
     def problems(self):
         return [self.describe_problem(i) for i in range(0, self.count_problems())]
+
+    @property
+    def problem_rules(self):
+        return [self.describe_problem_rules(i) for i in range(0, self.count_problems())]
 
     def run(self, callback=None, **kwargs):
         ret = super(Goal, self).run(**kwargs)
@@ -327,9 +349,12 @@ class Query(_hawkey.Query):
 
     def filter(self, *lst, **kwargs):
         new_query = type(self)(query=self)
-        return new_query.filterm(*lst, **kwargs)
+        return new_query._filterm(*lst, **kwargs)
 
     def filterm(self, *lst, **kwargs):
+        return self._filterm(*lst, **kwargs)
+
+    def _filterm(self, *lst, **kwargs):
         self._result = None
         flags = set(lst)
         for arg_tuple in _parse_filter_args(flags, kwargs):
